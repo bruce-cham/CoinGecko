@@ -2,9 +2,8 @@ name: Deploy Crypto Report to GitHub Pages
 
 on:
   schedule:
-    # Run at 8:00 AM and 8:00 PM GMT+8 (00:00 and 12:00 UTC)
-    - cron: '0 0 * * *'
-    - cron: '0 12 * * *'
+    # Run every 5 minutes
+    - cron: '*/5 * * * *'
   workflow_dispatch:  # Allow manual trigger
 
 permissions:
