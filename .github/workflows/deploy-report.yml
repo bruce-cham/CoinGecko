@@ -7,6 +7,10 @@ on:
     - cron: '*/30 * * * *'
   workflow_dispatch:  # Allow manual trigger
 
+env:
+  # Opt into Node.js 24 to avoid deprecation warnings
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 permissions:
   contents: read
   pages: write
@@ -37,7 +41,7 @@ jobs:
           python3 generate_html_report.py
 
       - name: Setup Pages
-        uses: actions/configure-pages@v4
+        uses: actions/configure-pages@v5
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
