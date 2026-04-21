@@ -392,8 +392,8 @@ def main():
     print("Generating HTML report...")
     html = generate_html(global_data, top_coins, categories, trending)
     
-    # Save to file
-    output_file = "/home/admin/.openclaw/workspace/crypto_report.html"
+    # Save to file (use current directory for GitHub Actions compatibility)
+    output_file = "index.html"
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(html)
     
