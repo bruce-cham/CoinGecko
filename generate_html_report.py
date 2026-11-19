@@ -462,11 +462,13 @@ def generate_html(global_data, top_coins, categories, trending):
         rank_class = f"rank-{i}" if i <= 3 else "rank-other"
         change_class = "positive" if change > 0 else "negative" if change < 0 else "neutral"
         change_str = change_text(change)
+        image = image_url(coin.get('image'))
+        image_html = f'<img src="{image}" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 8px; border-radius: 50%;">' if image else ''
         
         html += f'''                        <tr>
                             <td><div class="rank {rank_class}">{i}</div></td>
                             <td>
-                                <img src="{image_url(coin.get('image'))}" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 8px; border-radius: 50%;">
+                                {image_html}
                                 <span class="symbol">{sym}</span>
                                 <span class="price">({name})</span>
                             </td>

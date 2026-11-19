@@ -32,7 +32,12 @@ context.coins[0].image = 'https://example.com/" onerror="bad';
     assert(!html.includes('<B>INJECTED</B>'));
     assert(!html.includes('src="https://example.com/" onerror='));
     assert.equal(run('imageUrl("javascript:alert(1)")'), '');
-    console.log('PASS: injected markup escaped; unsafe image URLs rejected');
+    for (const value of ['javascript:alert(1)', 'data:image/svg+xml,x', '//example.com/x', null, 'http://[']) {
+        context.rejectedImage = value;
+        run('renderReport({}, [{symbol: "coin", image: rejectedImage}])');
+        assert(!elements.content.innerHTML.includes('<img'));
+    }
+    console.log('PASS: injected markup escaped; rejected image URLs emit no img element');
     assert(html.indexOf('BEST') < html.indexOf('&lt;B&gt;'));
     assert(html.indexOf('WORST') < html.indexOf('LOSER'));
     assert(!html.includes('+-'));

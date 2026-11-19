@@ -210,6 +210,11 @@
             return typeof value === 'number' && Number.isFinite(value) ? value : 0;
         }
 
+        function coinImage(value) {
+            const url = imageUrl(value);
+            return url ? `<img src="${url}" style="width:20px;height:20px;vertical-align:middle;margin-right:8px;border-radius:50%">` : '';
+        }
+
         function changeText(value) {
             return `${value > 0 ? '+' : ''}${number(value).toFixed(2)}%`;
         }
@@ -279,7 +284,7 @@
                                 ${coins.map((c, i) => `
                                     <tr>
                                         <td>${i+1}</td>
-                                        <td><img src="${imageUrl(c.image)}" style="width:20px;height:20px;vertical-align:middle;margin-right:8px;border-radius:50%">${escapeHtml(c.symbol.toUpperCase())}</td>
+                                        <td>${coinImage(c.image)}${escapeHtml(c.symbol.toUpperCase())}</td>
                                         <td>$${c.current_price?.toLocaleString() || 'N/A'}</td>
                                         <td>${formatNumber(c.market_cap || 0)}</td>
                                         <td>${formatNumber(c.total_volume || 0)}</td>

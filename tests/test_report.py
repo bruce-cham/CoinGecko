@@ -31,6 +31,8 @@ class RenderingTests(unittest.TestCase):
         for value in ['javascript:alert(1)', 'data:image/svg+xml,x', '//example.com/x', None, 'http://[']:
             with self.subTest(value=value):
                 self.assertEqual(report.image_url(value), '')
+                html = report.generate_html({}, [{'symbol': 'coin', 'image': value}], [], [])
+                self.assertNotIn('<img', html)
         self.assertEqual(report.image_url('http://example.com/x?a=1&b=2'), 'http://example.com/x?a=1&amp;b=2')
         self.assertEqual(report.image_url('https://example.com/x'), 'https://example.com/x')
 
