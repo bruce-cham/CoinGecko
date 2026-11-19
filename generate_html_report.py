@@ -3,42 +3,119 @@
 Generate HTML Crypto Market Report for GitHub Pages
 """
 
-import requests
-import json
-import statistics
+import argparse
+import math
+import time
+from html import escape
+from pathlib import Path
+from urllib.parse import urlsplit
 from datetime import datetime, timedelta, timezone
+
+import requests
 
 COINGECKO_API = "https://api.coingecko.com/api/v3"
 GMT8 = timezone(timedelta(hours=8))
 
+def fetch_json(path, params=None):
+    for attempt in range(4):
+        try:
+            response = requests.get(f"{COINGECKO_API}{path}", params=params, timeout=30)
+            if response.status_code == 429 or 500 <= response.status_code < 600:
+                if attempt < 3:
+                    time.sleep(min(30 * 2 ** attempt, 300))
+                    continue
+            response.raise_for_status()
+            return response.json()
+        except (requests.RequestException, ValueError) as exc:
+            raise RuntimeError(f"CoinGecko {path}: {exc}") from exc
+
+
+def require_object(value, label):
+    if not isinstance(value, dict):
+        raise RuntimeError(f"CoinGecko {label}: expected an object")
+    return value
+
+
+def require_records(value, label):
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise RuntimeError(f"CoinGecko {label}: expected a list of objects")
+    return value
+
+
 def fetch_data():
     """Fetch all market data"""
-    global_data = requests.get(f"{COINGECKO_API}/global", timeout=30).json().get("data", {})
+    global_data = require_object(require_object(fetch_json('/global'), '/global').get('data'), '/global data')
     
-    top_coins = requests.get(
-        f"{COINGECKO_API}/coins/markets",
+    top_coins = require_records(fetch_json(
+        "/coins/markets",
         params={
             "vs_currency": "usd",
             "order": "market_cap_desc",
             "per_page": 100,
             "page": 1,
-            "sparkline": False,
-            "price_change_percentage": "24h,7d"
+            "sparkline": False
         },
-        timeout=30
-    ).json()
+    ), '/coins/markets')
     
-    categories = requests.get(
-        f"{COINGECKO_API}/coins/categories",
+    categories = require_records(fetch_json(
+        "/coins/categories",
         params={"order": "market_cap_desc"},
-        timeout=30
-    ).json()[:10]
+    ), '/coins/categories')
     
-    trending = requests.get(f"{COINGECKO_API}/search/trending", timeout=30).json().get("coins", [])
+    trending = require_records(require_object(fetch_json('/search/trending'), '/search/trending').get('coins'), 'trending coins')
+    for item in trending:
+        require_object(item.get('item'), 'trending item')
     
     return global_data, top_coins, categories, trending
 
+
+def number(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else 0
+
+
+def text(value):
+    return escape(str(value if value is not None else ''), quote=True)
+
+
+def image_url(value):
+    if not isinstance(value, str):
+        return ''
+    try:
+        url = urlsplit(value)
+        return text(value) if url.scheme.lower() in ('http', 'https') and url.netloc else ''
+    except ValueError:
+        return ''
+
+
+def coin_change(coin):
+    return number(coin.get('price_change_percentage_24h'))
+
+
+def movers(coins):
+    gainers = sorted((c for c in coins if coin_change(c) > 0), key=coin_change, reverse=True)
+    losers = sorted((c for c in coins if coin_change(c) < 0), key=coin_change)
+    return gainers, losers
+
+
+def change_text(value):
+    return f'{value:+.2f}%' if value else '0.00%'
+
+
+def mover_rows(coins):
+    rows = []
+    for i, coin in enumerate(coins[:10], 1):
+        rank_class = f'rank-{i}' if i <= 3 else 'rank-other'
+        badge = 'badge-green' if coin_change(coin) > 0 else 'badge-red'
+        rows.append(f'''<tr>
+            <td><div class="rank {rank_class}">{i}</div></td>
+            <td><span class="symbol">{text(str(coin.get('symbol') or '').upper())}</span></td>
+            <td class="price">${number(coin.get('current_price')):,.4f}</td>
+            <td><span class="badge {badge}">{change_text(coin_change(coin))}</span></td>
+        </tr>''')
+    return ''.join(rows)
+
 def format_number(num, precision=2):
+    num = number(num)
     if num >= 1e12:
         return f"${num/1e12:.{precision}f}T"
     elif num >= 1e9:
@@ -55,20 +132,23 @@ def generate_html(global_data, top_coins, categories, trending):
     now = generated_at.strftime("%Y-%m-%d %H:%M GMT+8")
     
     # Market structure
-    total_mcap = global_data.get("total_market_cap", {}).get("usd", 0)
-    mcap_change_24h = global_data.get("market_cap_change_percentage_24h_usd", 0)
-    btc_dominance = global_data.get("market_cap_percentage", {}).get("btc", 0)
-    eth_dominance = global_data.get("market_cap_percentage", {}).get("eth", 0)
-    total_volume = global_data.get("total_volume", {}).get("usd", 0)
+    def metric(key, currency):
+        values = global_data.get(key)
+        return number(values.get(currency)) if isinstance(values, dict) else 0
+
+    total_mcap = metric('total_market_cap', 'usd')
+    mcap_change_24h = number(global_data.get('market_cap_change_percentage_24h_usd'))
+    btc_dominance = metric('market_cap_percentage', 'btc')
+    eth_dominance = metric('market_cap_percentage', 'eth')
+    total_volume = metric('total_volume', 'usd')
     
     # Top gainers/losers
-    sorted_coins = sorted(top_coins, key=lambda x: x.get("price_change_percentage_24h", 0) or 0, reverse=True)
-    top_gainers = sorted_coins[:10]
-    top_losers = sorted_coins[-10:]
+    top_gainers, top_losers = movers(top_coins)
     
     # Calculate gainers/losers count
-    gains = [c for c in top_coins[:100] if (c.get("price_change_percentage_24h", 0) or 0) > 0]
-    gainers_pct = len(gains)
+    gainers_count = sum(coin_change(c) > 0 for c in top_coins[:100])
+    losers_count = sum(coin_change(c) < 0 for c in top_coins[:100])
+    gainers_pct = 100 * gainers_count / len(top_coins[:100]) if top_coins else 0
     
     html = f'''<!DOCTYPE html>
 <html lang="en">
@@ -230,11 +310,11 @@ def generate_html(global_data, top_coins, categories, trending):
                 <h2>📈 Momentum & Breadth</h2>
                 <div class="metric">
                     <span class="metric-label">Gainers (Top 100)</span>
-                    <span class="metric-value positive">{gainers_pct} 🟢</span>
+                    <span class="metric-value positive">{gainers_count} 🟢</span>
                 </div>
                 <div class="metric">
                     <span class="metric-label">Losers (Top 100)</span>
-                    <span class="metric-value negative">{100-gainers_pct} 🔴</span>
+                    <span class="metric-value negative">{losers_count} 🔴</span>
                 </div>
                 <div class="metric">
                     <span class="metric-label">Market Breadth</span>
@@ -260,19 +340,7 @@ def generate_html(global_data, top_coins, categories, trending):
                     <tbody>
 '''
     
-    for i, coin in enumerate(top_gainers, 1):
-        sym = coin.get("symbol", "").upper()
-        price = coin.get("current_price", 0) or 0
-        change = coin.get("price_change_percentage_24h", 0) or 0
-        rank_class = f"rank-{i}" if i <= 3 else "rank-other"
-        
-        html += f'''                        <tr>
-                            <td><div class="rank {rank_class}">{i}</div></td>
-                            <td><span class="symbol">{sym}</span></td>
-                            <td class="price">${price:,.4f}</td>
-                            <td><span class="badge badge-green">+{change:.2f}%</span></td>
-                        </tr>
-'''
+    html += mover_rows(top_gainers)
     
     html += '''                    </tbody>
                 </table>
@@ -292,19 +360,7 @@ def generate_html(global_data, top_coins, categories, trending):
                     <tbody>
 '''
     
-    for i, coin in enumerate(top_losers, 1):
-        sym = coin.get("symbol", "").upper()
-        price = coin.get("current_price", 0) or 0
-        change = coin.get("price_change_percentage_24h", 0) or 0
-        rank_class = f"rank-{i}" if i <= 3 else "rank-other"
-        
-        html += f'''                        <tr>
-                            <td><div class="rank {rank_class}">{i}</div></td>
-                            <td><span class="symbol">{sym}</span></td>
-                            <td class="price">${price:,.4f}</td>
-                            <td><span class="badge badge-red">{change:.2f}%</span></td>
-                        </tr>
-'''
+    html += mover_rows(top_losers)
     
     html += '''                    </tbody>
                 </table>
@@ -327,9 +383,9 @@ def generate_html(global_data, top_coins, categories, trending):
     
     sector_icons = ['🚀', '⭐', '🌟', '💫', '✨', '🔥', '💎', '🏆', '🎯', '💪']
     for i, cat in enumerate(categories[:10], 1):
-        name = cat.get("name", "Unknown")
-        mcap = cat.get("market_cap", 0) or 0
-        change = cat.get("market_cap_change_24h", 0) or 0
+        name = text(cat.get("name", "Unknown"))
+        mcap = number(cat.get("market_cap"))
+        change = number(cat.get("market_cap_change_24h"))
         icon = sector_icons[i-1] if i <= len(sector_icons) else "📌"
         badge_class = "badge-green" if change > 0 else "badge-red"
         
@@ -360,10 +416,10 @@ def generate_html(global_data, top_coins, categories, trending):
     
     trending_icons = ['🔥', '⚡', '💥', '🌟', '✨', '💫', '⭐']
     for i, item in enumerate(trending[:7], 1):
-        coin = item.get("item", {})
-        name = coin.get("name", "Unknown")
-        symbol = coin.get("symbol", "").upper()
-        mcap_rank = coin.get("market_cap_rank", "N/A")
+        coin = item.get("item") or {}
+        name = text(coin.get("name", "Unknown"))
+        symbol = text(str(coin.get("symbol") or "").upper())
+        mcap_rank = text(coin.get("market_cap_rank", "N/A"))
         icon = trending_icons[i-1] if i <= len(trending_icons) else "📍"
         
         html += f'''                    <tr>
@@ -396,21 +452,23 @@ def generate_html(global_data, top_coins, categories, trending):
     
     # Add top 100 coins
     for i, coin in enumerate(top_coins, 1):
-        sym = coin.get("symbol", "").upper()
-        name = coin.get("name", "Unknown")
-        price = coin.get("current_price", 0) or 0
-        mcap = coin.get("market_cap", 0) or 0
-        volume = coin.get("total_volume", 0) or 0
-        change = coin.get("price_change_percentage_24h", 0) or 0
+        sym = text(str(coin.get("symbol") or "").upper())
+        name = text(coin.get("name", "Unknown"))
+        price = number(coin.get("current_price"))
+        mcap = number(coin.get("market_cap"))
+        volume = number(coin.get("total_volume"))
+        change = number(coin.get("price_change_percentage_24h"))
         
         rank_class = f"rank-{i}" if i <= 3 else "rank-other"
         change_class = "positive" if change > 0 else "negative" if change < 0 else "neutral"
-        change_str = f"{change:+.2f}%" if change else "N/A"
+        change_str = change_text(change)
+        image = image_url(coin.get('image'))
+        image_html = f'<img src="{image}" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 8px; border-radius: 50%;">' if image else ''
         
         html += f'''                        <tr>
                             <td><div class="rank {rank_class}">{i}</div></td>
                             <td>
-                                <img src="{coin.get('image', '')}" style="width: 24px; height: 24px; vertical-align: middle; margin-right: 8px; border-radius: 50%;">
+                                {image_html}
                                 <span class="symbol">{sym}</span>
                                 <span class="price">({name})</span>
                             </td>
@@ -437,6 +495,9 @@ def generate_html(global_data, top_coins, categories, trending):
     return html
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', default='index.html')
+    args = parser.parse_args()
     print("Fetching market data...")
     global_data, top_coins, categories, trending = fetch_data()
     
@@ -444,8 +505,9 @@ def main():
     html = generate_html(global_data, top_coins, categories, trending)
     
     # Save to file (use current directory for GitHub Actions compatibility)
-    output_file = "index.html"
-    with open(output_file, "w", encoding="utf-8") as f:
+    output_file = Path(args.output)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    with output_file.open("w", encoding="utf-8") as f:
         f.write(html)
     
     print(f"✅ HTML report saved to: {output_file}")
@@ -456,4 +518,7 @@ def main():
     print(html[:500])
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (RuntimeError, OSError) as exc:
+        raise SystemExit(f"Report generation failed: {exc}") from exc
