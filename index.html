@@ -110,38 +110,75 @@
 
     <script>
         const COINGECKO_API = 'https://api.coingecko.com/api/v3';
-        let countdown = 30;
+        const REFRESH_INTERVAL = 30;
+        const MAX_RETRY_DELAY = 300;
+        let countdown = REFRESH_INTERVAL;
         let countdownInterval;
+        let isFetching = false;
+        let hasData = false;
+        let failureCount = 0;
+
+        class ApiError extends Error {}
+
+        async function fetchJson(url) {
+            let res;
+            try {
+                res = await fetch(url);
+            } catch {
+                throw new ApiError('Could not reach the CoinGecko API. Check your connection.');
+            }
+            if (res.status === 429) {
+                throw new ApiError('CoinGecko API rate limit reached (HTTP 429).');
+            }
+            if (!res.ok) {
+                throw new ApiError(`CoinGecko API returned an error (HTTP ${res.status}).`);
+            }
+            return res.json();
+        }
 
         async function fetchData() {
+            if (isFetching) return;
+            isFetching = true;
+            updateCountdown();
             const btn = document.getElementById('refreshBtn');
             btn.disabled = true;
-            document.getElementById('content').innerHTML = '<div class="loading">⏳ Fetching live data...</div>';
+            if (!hasData) {
+                document.getElementById('content').innerHTML = '<div class="loading">⏳ Fetching live data...</div>';
+            }
             
             try {
                 // Fetch all data in parallel
-                const [globalRes, coinsRes] = await Promise.all([
-                    fetch(`${COINGECKO_API}/global`),
-                    fetch(`${COINGECKO_API}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false&price_change_percentage=24h`)
+                const [globalData, coinsData] = await Promise.all([
+                    fetchJson(`${COINGECKO_API}/global`),
+                    fetchJson(`${COINGECKO_API}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false&price_change_percentage=24h`)
                 ]);
+                if (!globalData?.data || !Array.isArray(coinsData)) {
+                    throw new ApiError('CoinGecko API returned an unexpected response.');
+                }
                 
-                const globalData = await globalRes.json();
-                const coinsData = await coinsRes.json();
-                
+                const scrollY = window.scrollY;
                 renderReport(globalData.data, coinsData);
+                window.scrollTo(0, scrollY);
+                hasData = true;
+                failureCount = 0;
                 document.getElementById('lastUpdate').textContent = `Last updated: ${new Date().toLocaleString('en-US', {timeZone: 'Asia/Shanghai'})} GMT+8`;
                 
-                // Reset countdown
-                countdown = 30;
+                countdown = REFRESH_INTERVAL;
             } catch (error) {
+                failureCount++;
+                countdown = Math.min(REFRESH_INTERVAL * 2 ** failureCount, MAX_RETRY_DELAY);
+                hasData = false;
+                const message = error instanceof ApiError ? error.message : 'Failed to load market data.';
                 document.getElementById('content').innerHTML = `
                     <div class="error">
-                        ❌ Error fetching data: ${error.message}<br><br>
-                        CoinGecko API may be rate limited. Please wait a minute and try again.
+                        ❌ ${message}<br><br>
+                        Retrying automatically in ${countdown}s, or press Refresh Now.
                     </div>
                 `;
             } finally {
                 btn.disabled = false;
+                isFetching = false;
+                updateCountdown();
             }
         }
 
@@ -238,11 +275,18 @@
         }
 
         // Countdown timer
+        function updateCountdown() {
+            document.getElementById('countdown').textContent = isFetching
+                ? 'Refreshing...'
+                : `Auto-refresh in: ${countdown}s`;
+        }
+
         function startCountdown() {
             countdownInterval = setInterval(() => {
-                countdown--;
-                document.getElementById('countdown').textContent = `Auto-refresh in: ${countdown}s`;
-                if (countdown <= 0) {
+                if (isFetching) return;
+                countdown = Math.max(countdown - 1, 0);
+                updateCountdown();
+                if (countdown === 0) {
                     fetchData();
                 }
             }, 1000);
