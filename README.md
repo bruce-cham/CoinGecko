@@ -13,7 +13,7 @@ Automated crypto market analysis deployed to GitHub Pages.
 - **Trending Coins**: Real-time trending from CoinGecko
 
 ## ⏰ Update Schedule
-- The static report is generated hourly, at minute zero UTC (GitHub scheduling may be delayed), on pushes to `master`, or by manual workflow dispatch.
+- The static report is generated hourly, at minute 17 UTC (GitHub scheduling may be delayed), on pushes to `master`, or by manual workflow dispatch.
 - The checked-in live dashboard polls CoinGecko every 30 seconds, with exponential backoff after errors. It is separate from the deployed static report.
 
 ## 🚀 How It Works

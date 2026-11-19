@@ -4,8 +4,8 @@ on:
   push:
     branches: [master]
   schedule:
-    # Run hourly, at minute zero (UTC).
-    - cron: '0 * * * *'
+    # Run hourly, at minute 17 (UTC), away from top-of-hour congestion.
+    - cron: '17 * * * *'
   workflow_dispatch:  # Allow manual trigger
 
 env:
