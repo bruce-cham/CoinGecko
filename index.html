@@ -100,6 +100,7 @@
             <h1>📊 Live Crypto Market Report</h1>
             <p class="timestamp" id="lastUpdate">Loading...</p>
         </header>
+        <div id="errorBanner" role="alert" hidden></div>
         <div id="content">
             <div class="loading">⏳ Fetching live data from CoinGecko...</div>
         </div>
@@ -113,7 +114,6 @@
         const REFRESH_INTERVAL = 30;
         const MAX_RETRY_DELAY = 300;
         let countdown = REFRESH_INTERVAL;
-        let countdownInterval;
         let isFetching = false;
         let hasData = false;
         let failureCount = 0;
@@ -121,19 +121,24 @@
         class ApiError extends Error {}
 
         async function fetchJson(url) {
-            let res;
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 30000);
             try {
-                res = await fetch(url);
-            } catch {
+                const res = await fetch(url, {signal: controller.signal});
+                if (res.status === 429) {
+                    throw new ApiError('CoinGecko API rate limit reached (HTTP 429).');
+                }
+                if (!res.ok) {
+                    throw new ApiError(`CoinGecko API returned an error (HTTP ${res.status}).`);
+                }
+                return await res.json();
+            } catch (error) {
+                if (error instanceof ApiError) throw error;
+                if (error.name === 'AbortError') throw new ApiError('CoinGecko API request timed out.');
                 throw new ApiError('Could not reach the CoinGecko API. Check your connection.');
+            } finally {
+                clearTimeout(timeout);
             }
-            if (res.status === 429) {
-                throw new ApiError('CoinGecko API rate limit reached (HTTP 429).');
-            }
-            if (!res.ok) {
-                throw new ApiError(`CoinGecko API returned an error (HTTP ${res.status}).`);
-            }
-            return res.json();
         }
 
         async function fetchData() {
@@ -152,7 +157,7 @@
                     fetchJson(`${COINGECKO_API}/global`),
                     fetchJson(`${COINGECKO_API}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false&price_change_percentage=24h`)
                 ]);
-                if (!globalData?.data || !Array.isArray(coinsData)) {
+                if (!globalData?.data || typeof globalData.data !== 'object' || Array.isArray(globalData.data) || !Array.isArray(coinsData)) {
                     throw new ApiError('CoinGecko API returned an unexpected response.');
                 }
                 
@@ -160,6 +165,7 @@
                 renderReport(globalData.data, coinsData);
                 window.scrollTo(0, scrollY);
                 hasData = true;
+                document.getElementById('errorBanner').hidden = true;
                 failureCount = 0;
                 document.getElementById('lastUpdate').textContent = `Last updated: ${new Date().toLocaleString('en-US', {timeZone: 'Asia/Shanghai'})} GMT+8`;
                 
@@ -167,14 +173,11 @@
             } catch (error) {
                 failureCount++;
                 countdown = Math.min(REFRESH_INTERVAL * 2 ** failureCount, MAX_RETRY_DELAY);
-                hasData = false;
                 const message = error instanceof ApiError ? error.message : 'Failed to load market data.';
-                document.getElementById('content').innerHTML = `
-                    <div class="error">
-                        ❌ ${message}<br><br>
-                        Retrying automatically in ${countdown}s, or press Refresh Now.
-                    </div>
-                `;
+                const banner = document.getElementById('errorBanner');
+                banner.textContent = `❌ ${message} Retrying automatically in ${countdown}s, or press Refresh Now.${hasData ? ' Showing last successful update.' : ''}`;
+                banner.hidden = false;
+                if (!hasData) document.getElementById('content').textContent = '';
             } finally {
                 btn.disabled = false;
                 isFetching = false;
@@ -183,22 +186,54 @@
         }
 
         function formatNumber(num) {
+            num = number(num);
             if (num >= 1e12) return `$${(num/1e12).toFixed(2)}T`;
             if (num >= 1e9) return `$${(num/1e9).toFixed(2)}B`;
             if (num >= 1e6) return `$${(num/1e6).toFixed(2)}M`;
             return `$${num.toLocaleString()}`;
         }
 
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#x27;'}[c]));
+        }
+
+        function imageUrl(value) {
+            try {
+                const url = new URL(value);
+                return ['http:', 'https:'].includes(url.protocol) ? escapeHtml(url.href) : '';
+            } catch {
+                return '';
+            }
+        }
+
+        function number(value) {
+            return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+        }
+
+        function changeText(value) {
+            return `${value > 0 ? '+' : ''}${number(value).toFixed(2)}%`;
+        }
+
+        function moverRows(coins) {
+            return coins.map((c, i) => `<tr>
+                <td>${i+1}</td>
+                <td>${escapeHtml(c.symbol.toUpperCase())}</td>
+                <td>$${c.current_price?.toLocaleString() ?? 'N/A'}</td>
+                <td class="${c.price_change_percentage_24h > 0 ? 'positive' : 'negative'}">${changeText(c.price_change_percentage_24h)}</td>
+            </tr>`).join('');
+        }
+
         function renderReport(globalData, coins) {
-            const totalMcap = globalData.total_market_cap?.usd || 0;
-            const mcapChange = globalData.market_cap_change_percentage_24h_usd || 0;
-            const btcDominance = globalData.market_cap_percentage?.btc || 0;
-            const volume = globalData.total_volume?.usd || 0;
+            coins = coins.filter(c => c && typeof c === 'object' && typeof c.symbol === 'string'
+                && ['current_price', 'market_cap', 'total_volume', 'price_change_percentage_24h'].every(key => c[key] == null || (typeof c[key] === 'number' && Number.isFinite(c[key]))));
+            const totalMcap = number(globalData.total_market_cap?.usd);
+            const mcapChange = number(globalData.market_cap_change_percentage_24h_usd);
+            const btcDominance = number(globalData.market_cap_percentage?.btc);
+            const volume = number(globalData.total_volume?.usd);
             
             // Sort for gainers/losers
-            const sorted = [...coins].sort((a, b) => (b.price_change_percentage_24h || 0) - (a.price_change_percentage_24h || 0));
-            const gainers = sorted.slice(0, 10);
-            const losers = sorted.slice(-10).reverse();
+            const gainers = coins.filter(c => number(c.price_change_percentage_24h) > 0).sort((a, b) => b.price_change_percentage_24h - a.price_change_percentage_24h).slice(0, 10);
+            const losers = coins.filter(c => number(c.price_change_percentage_24h) < 0).sort((a, b) => a.price_change_percentage_24h - b.price_change_percentage_24h).slice(0, 10);
             
             let html = `
                 <div class="grid">
@@ -217,14 +252,7 @@
                         <table>
                             <thead><tr><th>#</th><th>Coin</th><th>Price</th><th>Change</th></tr></thead>
                             <tbody>
-                                ${gainers.map((c, i) => `
-                                    <tr>
-                                        <td>${i+1}</td>
-                                        <td>${c.symbol.toUpperCase()}</td>
-                                        <td>$${c.current_price?.toLocaleString() || 'N/A'}</td>
-                                        <td class="positive">+${c.price_change_percentage_24h?.toFixed(2) || 0}%</td>
-                                    </tr>
-                                `).join('')}
+                                ${moverRows(gainers)}
                             </tbody>
                         </table>
                     </div>
@@ -234,14 +262,7 @@
                         <table>
                             <thead><tr><th>#</th><th>Coin</th><th>Price</th><th>Change</th></tr></thead>
                             <tbody>
-                                ${losers.map((c, i) => `
-                                    <tr>
-                                        <td>${i+1}</td>
-                                        <td>${c.symbol.toUpperCase()}</td>
-                                        <td>$${c.current_price?.toLocaleString() || 'N/A'}</td>
-                                        <td class="negative">${c.price_change_percentage_24h?.toFixed(2) || 0}%</td>
-                                    </tr>
-                                `).join('')}
+                                ${moverRows(losers)}
                             </tbody>
                         </table>
                     </div>
@@ -258,11 +279,11 @@
                                 ${coins.map((c, i) => `
                                     <tr>
                                         <td>${i+1}</td>
-                                        <td><img src="${c.image}" style="width:20px;height:20px;vertical-align:middle;margin-right:8px;border-radius:50%">${c.symbol.toUpperCase()}</td>
+                                        <td><img src="${imageUrl(c.image)}" style="width:20px;height:20px;vertical-align:middle;margin-right:8px;border-radius:50%">${escapeHtml(c.symbol.toUpperCase())}</td>
                                         <td>$${c.current_price?.toLocaleString() || 'N/A'}</td>
                                         <td>${formatNumber(c.market_cap || 0)}</td>
                                         <td>${formatNumber(c.total_volume || 0)}</td>
-                                        <td class="${(c.price_change_percentage_24h || 0) > 0 ? 'positive' : 'negative'}">${c.price_change_percentage_24h?.toFixed(2) || 0}%</td>
+                                        <td class="${(c.price_change_percentage_24h || 0) > 0 ? 'positive' : 'negative'}">${changeText(c.price_change_percentage_24h)}</td>
                                     </tr>
                                 `).join('')}
                             </tbody>
@@ -282,7 +303,7 @@
         }
 
         function startCountdown() {
-            countdownInterval = setInterval(() => {
+            setInterval(() => {
                 if (isFetching) return;
                 countdown = Math.max(countdown - 1, 0);
                 updateCountdown();
